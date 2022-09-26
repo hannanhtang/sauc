@@ -1,0 +1,4 @@
+**/.idea/
+*.pyc
+checkpoints/
+__pycache__/
