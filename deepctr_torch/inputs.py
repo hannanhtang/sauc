@@ -199,7 +199,7 @@ def embedding_lookup(X, sparse_embedding_dict, sparse_input_dict, sparse_feature
         feature_name = fc.name
         embedding_name = fc.embedding_name
         if (len(return_feat_list) == 0 or feature_name in return_feat_list):
-            # TODO: add hash function
+            #
             # if fc.use_hash:
             #     raise NotImplementedError("hash function is not implemented in this version!")
             lookup_idx = np.array(sparse_input_dict[feature_name])
@@ -218,7 +218,7 @@ def varlen_embedding_lookup(X, embedding_dict, sequence_input_dict, varlen_spars
         embedding_name = fc.embedding_name
         if fc.use_hash:
             # lookup_idx = Hash(fc.vocabulary_size, mask_zero=True)(sequence_input_dict[feature_name])
-            # TODO: add hash function
+            #
             lookup_idx = sequence_input_dict[feature_name]
         else:
             lookup_idx = sequence_input_dict[feature_name]

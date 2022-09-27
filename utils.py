@@ -16,9 +16,6 @@ import torch.nn.functional as F
 
 from sklearn.metrics import roc_auc_score
 import logging
-# from metrics import AUC_LOO, AP_MRR
-# from metrics import normalized_discounted_cumulative_gain_matrix as NDCG
-
 
 def logCof(logger, log_path="./log/", log_file_name="test.log"):
     '''
@@ -48,177 +45,87 @@ def logCof(logger, log_path="./log/", log_file_name="test.log"):
     return logger
 
 
-
-class timer:
+class Auc(object):
     """
-    Time context manager for code block
-        with timer():
-            do something
-        timer.get()
+    分段，计算总的auc；当计算特别大的测试集auc时可以使用；来源paddle。
+
+
+    下面是测试样例
+    label1 = np.random.randint(low=0, high=2, size=[1000])
+    predict1 = np.random.uniform(0, 1, size=[1000])
+    label2 = np.random.randint(low=0, high=2, size=[1000])
+    predict2 = np.random.uniform(0, 1, size=[1000])
+    label = np.hstack((label1, label2))
+    predict = np.hstack((predict1, predict2))
+    auc = Auc(num_buckets=102400)
+    t = time()
+    auc.Update(label1, predict1)
+    print(auc.Compute())
+    print("this cost", time() - t, "s")
+    t = time()
+    auc.Update(label2, predict2)
+    print(auc.Compute())
+    print("this cost", time() - t, "s")
+    t = time()
+    print(sklearn_metrics.roc_auc_score(label, predict))
+    print("sklearn auc cost", time() - t, "s")
     """
-    from time import time
-    TAPE = [-1]  # global time record
-    NAMED_TAPE = {}
 
-    @staticmethod
-    def get():
-        if len(timer.TAPE) > 1:
-            return timer.TAPE.pop()
-        else:
-            return -1
+    def __init__(self, num_buckets):
+        self._num_buckets = num_buckets
+        self._table = np.zeros(shape=[2, self._num_buckets])
 
-    @staticmethod
-    def dict(select_keys=None):
-        hint = "|"
-        if select_keys is None:
-            for key, value in timer.NAMED_TAPE.items():
-                hint = hint + f"{key}:{value:.2f}s|"
-        else:
-            for key in select_keys:
-                value = timer.NAMED_TAPE[key]
-                hint = hint + f"{key}:{value:.2f}s|"
-        return hint
+    def Reset(self):
+        self._table = np.zeros(shape=[2, self._num_buckets])
 
-    @staticmethod
-    def zero(select_keys=None):
-        if select_keys is None:
-            for key, value in timer.NAMED_TAPE.items():
-                timer.NAMED_TAPE[key] = 0
-        else:
-            for key in select_keys:
-                timer.NAMED_TAPE[key] = 0
+    def Update(self, labels: np.ndarray, predicts: np.ndarray):
+        """
+        :param labels: 1-D ndarray
+        :param predicts: 1-D ndarray
+        :return: None
+        """
+        labels = labels.astype(np.int)
+        predicts = self._num_buckets * predicts
 
-    def __init__(self, tape=None, **kwargs):
-        if kwargs.get('name'):
-            timer.NAMED_TAPE[kwargs['name']] = timer.NAMED_TAPE[
-                kwargs['name']] if timer.NAMED_TAPE.get(kwargs['name']) else 0.
-            self.named = kwargs['name']
-            if kwargs.get("group"):
-                #TODO: add group function
-                pass
-        else:
-            self.named = False
-            self.tape = tape or timer.TAPE
+        buckets = np.round(predicts).astype(np.int)
+        buckets = np.where(buckets < self._num_buckets,
+                           buckets, self._num_buckets - 1)
 
-    def __enter__(self):
-        self.start = timer.time()
-        return self
+        for i in range(len(labels)):
+            self._table[labels[i], buckets[i]] += 1
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.named:
-            timer.NAMED_TAPE[self.named] += timer.time() - self.start
-        else:
-            self.tape.append(int(timer.time() - self.start))
+    def Compute(self):
+        tn = 0
+        tp = 0
+        area = 0
+        for i in range(self._num_buckets):
+            new_tn = tn + self._table[0, i]
+            new_tp = tp + self._table[1, i]
+            # self._table[1, i] * tn + self._table[1, i]*self._table[0, i] / 2
+            area += (new_tp - tp) * (tn + new_tn) / 2
+            tn = new_tn
+            tp = new_tp
+        if tp < 1e-3 or tn < 1e-3:
+            return -0.5  # 样本全正例，或全负例
+        return area / (tn * tp)
 
 
-
-def cprint(words : str):
-    print(f"\033[0;30;43m{words}\033[0m")
-
-
-def set_seed(seed):
-    np.random.seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-    torch.manual_seed(seed)
-
-
-
-def shuffle(*arrays, **kwargs):
-
-    require_indices = kwargs.get('indices', False)
-
-    if len(set(len(x) for x in arrays)) != 1:
-        raise ValueError('All inputs to shuffle must have '
-                         'the same length.')
-
-    shuffle_indices = np.arange(len(arrays[0]))
-    np.random.shuffle(shuffle_indices)
-
-    if len(arrays) == 1:
-        result = arrays[0][shuffle_indices]
-    else:
-        result = tuple(x[shuffle_indices] for x in arrays)
-
-    if require_indices:
-        return result, shuffle_indices
-    else:
-        return result
-
-def getFileName(config):
-    if not os.path.exists(config["checkpoints_path"]):
-        os.makedirs(config["checkpoints_path"], exist_ok=True)
-    dataset_name = config['dataset_name']
-    sample_way = config["sampler"]
-    model_name = config["model_name"]
-    loss = config["loss"]
-    current_time = config["current_time"]
-    # if config["model"] == 'mf':
-    #     model_name = "mf"
-    # elif config["model"] == 'lgn':
-    #     model_name = f"lgn-{config['dataset']}-{sample_way}-{loss}-{config['lightGCN_n_layers']}-{config['latent_dim_rec']}.pth.tar"
-    # elif config["model"] == 'lgn_hash':
-    #     model_name = f"lgn_hash-{config['dataset']}-{sample_way}-{loss}-{config['lightGCN_n_layers']}-{config['latent_dim_rec']}.pth.tar"
-    # else:
-    #     model_name = f"othermodel-{config['dataset']}.pth.tar"
-    file_name = "-".join([dataset_name, sample_way, model_name, loss, current_time]) + ".pth.tar"
-    return os.path.join(config["checkpoints_path"], file_name)
-
-
-class EarlyStopping:
+def clear_result(k=5):
+    import os
+    import pandas as pd
     '''
-    Early stop the training if validation metric doesn't improve after
-    a given patience
-    from: https://github.com/shaheerzaman/Earlystopping_Pytorch/blob/master/pytool.py
-
-    Example:
-        # initialize the early_stopping object
-        early_stopping = EarlyStopping(patience=5, verbose=True)
-        for epoch in xxx:
-            xxx
-            # early_stopping needs the validation loss to check if it has decresed,
-            # and if it has, it will make a checkpoint of the current model
-            early_stopping(valid_loss, model)
-
-            if early_stopping.early_stop:
-                print("Early stopping")
-                break
+        每个实验保留最好的前k个结果，其余删除。
     '''
-
-    def __init__(self, patience=7, verbose=False,
-                 delta=0, path='checkpoint.pt'):
-        self.patience = patience
-        self.verbose = verbose
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-        self.val_loss_min = np.Inf
-        self.delta = delta
-        self.path = path
-
-    def __call__(self, metric, model):
-        score = metric
-
-        if self.best_score is None:
-            self.best_score = score
-            self.save_checkpoint(model)
-        elif score < self.best_score + self.delta:
-            self.counter += 1
-            print(f'EarlyStopping Counter: {self.counter} out of {self.patience}')
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_score = score
-            self.save_checkpoint(model)
-            self.counter = 0
-
-    def save_checkpoint(self, model):
-        '''
-        save model when validation loss decrease
-        '''
-        # if self.verbose:
-        #     print(f'validation loss decrease ({self.val_loss_min:.6f})')
-        # print("model_print", model)
-        torch.save(model.state_dict(), self.path)
-        # torch.save(model, self.path)
+    list = os.listdir("./saved_models")
+    list = [x.split("_") for x in list]
+    df = pd.DataFrame(list, columns=["dataset", "model", "loss", "time", "perform"])
+    ans = []
+    for name, data in df.groupby(["dataset", "loss"]):
+        data.perform = data.perform.apply(lambda x: float(x[:-3]))
+        temp = data.sort_values("perform", ascending=False)[k:]
+        ans.extend(temp.index)
+    temp = df.iloc[ans, :]
+    ans = temp["dataset"] + "_" + temp["model"] + "_" + temp["loss"] + "_" + temp["time"] + "_" + temp["perform"]
+    ans = ["./saved_models/" + x for x in ans]
+    for file in ans:
+        os.remove(file)

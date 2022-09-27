@@ -1,1 +1,1 @@
-直接运行 `nni_tunner/citeulike-uniform-deepfm-sauc-train_for_user.py` 即可。
+直接运行 `run_with_CiteULike/DeepFM_SAUC.py` 即可。
